@@ -13,7 +13,8 @@ type TabType = 'create' | 'join' | 'list';
 
 export default function WatchRoomPage() {
   const router = useRouter();
-  const { getRoomList, isConnected, createRoom, joinRoom, currentRoom, isOwner, members } = useWatchRoomContext();
+  const watchRoom = useWatchRoomContext();
+  const { getRoomList, isConnected, createRoom, joinRoom, currentRoom, isOwner, members, socket } = watchRoom;
   const [activeTab, setActiveTab] = useState<TabType>('create');
 
   // 获取当前登录用户（在客户端挂载后读取，避免 hydration 错误）
@@ -137,33 +138,53 @@ export default function WatchRoomPage() {
   useEffect(() => {
     if (!currentRoom || isOwner) return;
 
-    // 房员加入房间后，检查房主的播放状态
-    if (currentRoom.currentState) {
-      const state = currentRoom.currentState;
-      if (state.type === 'play') {
-        // 跳转到播放页面，使用完整参数
-        console.log('[WatchRoom] Member joining/following, redirecting to play page');
+    // 房员加入房间后，不立即跳转
+    // 而是监听 play:change 或 live:change 事件（说明房主正在活跃使用）
+    // 这样可以避免房主已经离开play页面但状态未清除的情况
 
+    // 检查房主的播放状态 - 仅在首次加入且状态是最近更新时才跳转
+    // 这里不再自动跳转，而是等待房主的下一次操作
+  }, [currentRoom, isOwner]);
+
+  // 监听房主的主动操作（切换视频/频道）
+  useEffect(() => {
+    if (!currentRoom || isOwner) return;
+
+    const handlePlayChange = (state: any) => {
+      console.log('[WatchRoom] Member following owner - play:change event');
+      if (state.type === 'play') {
         const params = new URLSearchParams({
           id: state.videoId,
           source: state.source,
           episode: String(state.episode || 1),
         });
 
-        // 添加可选参数
         if (state.videoName) params.set('title', state.videoName);
         if (state.videoYear) params.set('year', state.videoYear);
         if (state.searchTitle) params.set('stitle', state.searchTitle);
 
         router.push(`/play?${params.toString()}`);
-      } else if (state.type === 'live') {
-        // 跳转到直播页面
-        console.log('[WatchRoom] Member joining/following, redirecting to live page');
+      }
+    };
+
+    const handleLiveChange = (state: any) => {
+      console.log('[WatchRoom] Member following owner - live:change event');
+      if (state.type === 'live') {
         router.push(`/live?id=${state.channelId}`);
       }
+    };
+
+    // 监听房主切换视频/频道的事件
+    if (socket) {
+      socket.on('play:change', handlePlayChange);
+      socket.on('live:change', handleLiveChange);
+
+      return () => {
+        socket.off('play:change', handlePlayChange);
+        socket.off('live:change', handleLiveChange);
+      };
     }
-    // 如果房主还没播放，留在观影室页面等待
-  }, [currentRoom?.currentState, isOwner, router]);
+  }, [currentRoom, isOwner, router, socket]);
 
   // 从房间列表加入房间
   const handleJoinFromList = (room: Room) => {
@@ -197,21 +218,57 @@ export default function WatchRoomPage() {
     <PageLayout activePath="/watch-room">
       <div className="flex flex-col gap-4 py-4 px-5 lg:px-[3rem] 2xl:px-20">
         {/* 房员等待提示 */}
-        {currentRoom && !isOwner && !currentRoom.currentState && (
+        {currentRoom && !isOwner && (
           <div className="mb-4 bg-gradient-to-r from-blue-500 to-purple-600 rounded-xl p-6 shadow-lg">
-            <div className="flex items-center justify-center gap-4 text-white">
-              <div className="relative">
-                <div className="w-12 h-12 border-4 border-white/30 border-t-white rounded-full animate-spin" />
+            <div className="flex items-center justify-between gap-4 text-white">
+              <div className="flex items-center gap-4 flex-1">
+                <div className="relative">
+                  <div className="w-12 h-12 border-4 border-white/30 border-t-white rounded-full animate-spin" />
+                </div>
+                <div className="flex-1">
+                  <h3 className="text-lg font-bold mb-1">
+                    {currentRoom.currentState ? '房主正在播放' : '等待房主开始播放'}
+                  </h3>
+                  <p className="text-sm text-white/80">
+                    房间: {currentRoom.name} | 房主: {currentRoom.ownerName}
+                  </p>
+                  {currentRoom.currentState && (
+                    <p className="text-xs text-white/90 mt-1">
+                      {currentRoom.currentState.type === 'play'
+                        ? `${currentRoom.currentState.videoName || '未知视频'}`
+                        : `${currentRoom.currentState.channelName || '未知频道'}`}
+                    </p>
+                  )}
+                  {!currentRoom.currentState && (
+                    <p className="text-xs text-white/70 mt-1">
+                      当房主开始播放时，您将自动跟随
+                    </p>
+                  )}
+                </div>
               </div>
-              <div>
-                <h3 className="text-lg font-bold mb-1">等待房主开始播放</h3>
-                <p className="text-sm text-white/80">
-                  房间: {currentRoom.name} | 房主: {currentRoom.ownerName}
-                </p>
-                <p className="text-xs text-white/70 mt-1">
-                  当房主开始播放时，您将自动跳转到相同的视频或频道
-                </p>
-              </div>
+              {currentRoom.currentState && (
+                <button
+                  onClick={() => {
+                    const state = currentRoom.currentState!;
+                    if (state.type === 'play') {
+                      const params = new URLSearchParams({
+                        id: state.videoId,
+                        source: state.source,
+                        episode: String(state.episode || 1),
+                      });
+                      if (state.videoName) params.set('title', state.videoName);
+                      if (state.videoYear) params.set('year', state.videoYear);
+                      if (state.searchTitle) params.set('stitle', state.searchTitle);
+                      router.push(`/play?${params.toString()}`);
+                    } else if (state.type === 'live') {
+                      router.push(`/live?id=${state.channelId}`);
+                    }
+                  }}
+                  className="px-6 py-2 bg-white text-blue-600 font-medium rounded-lg hover:bg-white/90 transition-colors whitespace-nowrap"
+                >
+                  立即加入
+                </button>
+              )}
             </div>
           </div>
         )}

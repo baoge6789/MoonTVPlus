@@ -211,14 +211,25 @@ class WatchRoomServer {
 
       // 切换视频/集数
       socket.on('play:change', (state) => {
+        console.log(`[WatchRoom] Received play:change from ${socket.id}:`, state);
         const roomInfo = this.socketToRoom.get(socket.id);
-        if (!roomInfo || !roomInfo.isOwner) return;
+        if (!roomInfo) {
+          console.log('[WatchRoom] No room info for socket, ignoring play:change');
+          return;
+        }
+        if (!roomInfo.isOwner) {
+          console.log('[WatchRoom] User is not owner, ignoring play:change');
+          return;
+        }
 
         const room = this.rooms.get(roomInfo.roomId);
         if (room) {
           room.currentState = state;
           this.rooms.set(roomInfo.roomId, room);
+          console.log(`[WatchRoom] Broadcasting play:change to room ${roomInfo.roomId}`);
           socket.to(roomInfo.roomId).emit('play:change', state);
+        } else {
+          console.log('[WatchRoom] Room not found for play:change');
         }
       });
 
@@ -387,15 +398,28 @@ class WatchRoomServer {
   startCleanupTimer() {
     this.cleanupInterval = setInterval(() => {
       const now = Date.now();
-      const timeout = 5 * 60 * 1000; // 5分钟
+      const deleteTimeout = 5 * 60 * 1000; // 5分钟 - 删除房间
+      const clearStateTimeout = 30 * 1000; // 30秒 - 清除播放状态
 
       for (const [roomId, room] of this.rooms.entries()) {
-        if (now - room.lastOwnerHeartbeat > timeout) {
+        const timeSinceHeartbeat = now - room.lastOwnerHeartbeat;
+
+        // 如果房主心跳超过30秒，清除播放状态
+        if (timeSinceHeartbeat > clearStateTimeout && room.currentState !== null) {
+          console.log(`[WatchRoom] Room ${roomId} owner inactive for 30s, clearing play state`);
+          room.currentState = null;
+          this.rooms.set(roomId, room);
+          // 通知房间内所有成员状态已清除
+          this.io.to(roomId).emit('state:cleared');
+        }
+
+        // 检查房主是否超时5分钟 - 删除房间
+        if (timeSinceHeartbeat > deleteTimeout) {
           console.log(`[WatchRoom] Room ${roomId} owner timeout, deleting...`);
           this.deleteRoom(roomId);
         }
       }
-    }, 30000); // 每30秒检查一次
+    }, 10000); // 每10秒检查一次，确保更及时的清理
   }
 
   generateRoomId() {

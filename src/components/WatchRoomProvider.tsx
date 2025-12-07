@@ -43,6 +43,7 @@ interface WatchRoomContextType {
   pause: () => void;
   changeVideo: (state: any) => void;
   changeLiveChannel: (state: any) => void;
+  clearRoomState: () => void;
 }
 
 const WatchRoomContext = createContext<WatchRoomContextType | null>(null);
@@ -91,7 +92,19 @@ export function WatchRoomProvider({ children }: WatchRoomProviderProps) {
     }
   }, []);
 
-  const watchRoom = useWatchRoom(handleRoomDeleted);
+  // 处理房间状态清除的回调（房主离开超过30秒）
+  const handleStateCleared = useCallback(() => {
+    console.log('[WatchRoomProvider] Room state cleared');
+
+    setToast({
+      message: '房主已离开，播放状态已清除',
+      type: 'warning',
+      duration: 4000,
+      onClose: () => setToast(null),
+    });
+  }, []);
+
+  const watchRoom = useWatchRoom(handleRoomDeleted, handleStateCleared);
 
   // 加载配置
   useEffect(() => {
@@ -164,6 +177,7 @@ export function WatchRoomProvider({ children }: WatchRoomProviderProps) {
     pause: watchRoom.pause,
     changeVideo: watchRoom.changeVideo,
     changeLiveChannel: watchRoom.changeLiveChannel,
+    clearRoomState: watchRoom.clearRoomState,
   };
 
   return (

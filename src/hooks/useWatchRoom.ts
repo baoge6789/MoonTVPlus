@@ -15,7 +15,10 @@ import type {
 
 const STORAGE_KEY = 'watch_room_info';
 
-export function useWatchRoom(onRoomDeleted?: (data?: { reason?: string }) => void) {
+export function useWatchRoom(
+  onRoomDeleted?: (data?: { reason?: string }) => void,
+  onStateCleared?: () => void
+) {
   const [socket, setSocket] = useState<WatchRoomSocket | null>(null);
   const [isConnected, setIsConnected] = useState(false);
   const [currentRoom, setCurrentRoom] = useState<Room | null>(null);
@@ -264,8 +267,16 @@ export function useWatchRoom(onRoomDeleted?: (data?: { reason?: string }) => voi
   const changeVideo = useCallback(
     (state: PlayState) => {
       const sock = watchRoomSocketManager.getSocket();
-      if (!sock || !isOwner) return;
+      if (!sock) {
+        console.log('[WatchRoom] Cannot change video - no socket');
+        return;
+      }
+      if (!isOwner) {
+        console.log('[WatchRoom] Cannot change video - not owner');
+        return;
+      }
 
+      console.log('[WatchRoom] Emitting play:change with state:', state);
       sock.emit('play:change', state);
     },
     [isOwner]
@@ -281,6 +292,22 @@ export function useWatchRoom(onRoomDeleted?: (data?: { reason?: string }) => voi
     },
     [isOwner]
   );
+
+  // 清除房间播放状态（房主离开播放/直播页面时调用）
+  const clearRoomState = useCallback(() => {
+    const sock = watchRoomSocketManager.getSocket();
+    if (!sock) {
+      console.log('[WatchRoom] Cannot clear state - no socket');
+      return;
+    }
+    if (!isOwner) {
+      console.log('[WatchRoom] Cannot clear state - not owner');
+      return;
+    }
+
+    console.log('[WatchRoom] Emitting state:clear');
+    sock.emit('state:clear');
+  }, [isOwner]);
 
   // 设置事件监听
   useEffect(() => {
@@ -338,6 +365,17 @@ export function useWatchRoom(onRoomDeleted?: (data?: { reason?: string }) => voi
       setChatMessages((prev) => [...prev, message]);
     });
 
+    // 状态清除事件（房主心跳超时）
+    socket.on('state:cleared', () => {
+      console.log('[WatchRoom] Room state cleared by server (owner inactive)');
+
+      // 清除当前房间的播放/直播状态
+      setCurrentRoom((prev) => (prev ? { ...prev, currentState: null } : null));
+
+      // 调用回调显示Toast
+      onStateCleared?.();
+    });
+
     // 连接状态
     socket.on('connect', () => {
       setIsConnected(true);
@@ -356,10 +394,11 @@ export function useWatchRoom(onRoomDeleted?: (data?: { reason?: string }) => voi
       socket.off('play:change');
       socket.off('live:change');
       socket.off('chat:message');
+      socket.off('state:cleared');
       socket.off('connect');
       socket.off('disconnect');
     };
-  }, [socket, currentRoom, onRoomDeleted]);
+  }, [socket, currentRoom, onRoomDeleted, onStateCleared]);
 
   // 清理
   useEffect(() => {
@@ -390,6 +429,7 @@ export function useWatchRoom(onRoomDeleted?: (data?: { reason?: string }) => voi
     pause,
     changeVideo,
     changeLiveChannel,
+    clearRoomState,
   };
 }
 

@@ -27,6 +27,7 @@ export function useLiveSync({
   const currentRoom = watchRoom?.currentRoom;
   const socket = watchRoom?.socket;
 
+
   // 房主：广播频道切换
   const broadcastChannelChange = useCallback(() => {
     if (!isOwner || !socket || syncingRef.current || !watchRoom) return;
