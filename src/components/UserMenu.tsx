@@ -113,6 +113,8 @@ export const UserMenu: React.FC = () => {
   // 邮件通知设置
   const [userEmail, setUserEmail] = useState('');
   const [emailNotifications, setEmailNotifications] = useState(false);
+  const [emailSettingsLoading, setEmailSettingsLoading] = useState(false);
+  const [emailSettingsSaving, setEmailSettingsSaving] = useState(false);
 
   // 折叠面板状态
   const [isDoubanSectionOpen, setIsDoubanSectionOpen] = useState(true);
@@ -396,14 +398,12 @@ export const UserMenu: React.FC = () => {
       if (savedSearchTraditionalToSimplified !== null) {
         setSearchTraditionalToSimplified(savedSearchTraditionalToSimplified === 'true');
       }
-
-      // 加载邮件通知设置
-      loadEmailSettings();
     }
   }, []);
 
   // 加载邮件通知设置
   const loadEmailSettings = async () => {
+    setEmailSettingsLoading(true);
     try {
       const response = await fetch('/api/user/email-settings');
       if (response.ok) {
@@ -413,11 +413,14 @@ export const UserMenu: React.FC = () => {
       }
     } catch (error) {
       console.error('加载邮件设置失败:', error);
+    } finally {
+      setEmailSettingsLoading(false);
     }
   };
 
   // 保存邮件通知设置
   const handleSaveEmailSettings = async () => {
+    setEmailSettingsSaving(true);
     try {
       const response = await fetch('/api/user/email-settings', {
         method: 'POST',
@@ -454,6 +457,8 @@ export const UserMenu: React.FC = () => {
         messageEl.className = 'text-xs text-center text-red-600 dark:text-red-400';
         messageEl.classList.remove('hidden');
       }
+    } finally {
+      setEmailSettingsSaving(false);
     }
   };
 
@@ -921,6 +926,8 @@ export const UserMenu: React.FC = () => {
                     e.stopPropagation();
                     setIsOpen(false);
                     setIsEmailSettingsOpen(true);
+                    // 懒加载:打开面板时才请求邮件设置
+                    loadEmailSettings();
                   }}
                   className='p-0.5 rounded hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors'
                   title='邮件通知设置'
@@ -2132,52 +2139,81 @@ export const UserMenu: React.FC = () => {
           </div>
 
           {/* 表单 */}
-          <div className='space-y-4'>
-            <div>
-              <label className='block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2'>
-                邮箱地址
-              </label>
-              <input
-                type='email'
-                value={userEmail}
-                onChange={(e) => setUserEmail(e.target.value)}
-                placeholder='输入您的邮箱地址'
-                className='w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500'
-              />
-            </div>
-
-            <div className='flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-800 rounded-lg'>
-              <div>
-                <h4 className='text-sm font-medium text-gray-700 dark:text-gray-300'>
-                  接收收藏更新通知
-                </h4>
-                <p className='text-xs text-gray-500 dark:text-gray-400 mt-1'>
-                  当收藏的影片有更新时发送邮件通知
-                </p>
+          {emailSettingsLoading ? (
+            <div className='space-y-4'>
+              {/* 加载骨架屏 */}
+              <div className='animate-pulse'>
+                <div className='h-4 bg-gray-200 dark:bg-gray-700 rounded w-20 mb-2'></div>
+                <div className='h-10 bg-gray-200 dark:bg-gray-700 rounded'></div>
               </div>
-              <button
-                onClick={() => setEmailNotifications(!emailNotifications)}
-                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-                  emailNotifications ? 'bg-blue-600' : 'bg-gray-200 dark:bg-gray-700'
-                }`}
-              >
-                <span
-                  className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                    emailNotifications ? 'translate-x-6' : 'translate-x-1'
-                  }`}
-                />
-              </button>
+              <div className='animate-pulse'>
+                <div className='h-20 bg-gray-200 dark:bg-gray-700 rounded'></div>
+              </div>
+              <div className='animate-pulse'>
+                <div className='h-10 bg-gray-200 dark:bg-gray-700 rounded'></div>
+              </div>
+              <div className='text-center text-sm text-gray-500 dark:text-gray-400'>
+                加载中...
+              </div>
             </div>
+          ) : (
+            <div className='space-y-4'>
+              <div>
+                <label className='block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2'>
+                  邮箱地址
+                </label>
+                <input
+                  type='email'
+                  value={userEmail}
+                  onChange={(e) => setUserEmail(e.target.value)}
+                  placeholder='输入您的邮箱地址'
+                  disabled={emailSettingsSaving}
+                  className='w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed'
+                />
+              </div>
 
-            <button
-              onClick={handleSaveEmailSettings}
-              className='w-full px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors'
-            >
-              保存设置
-            </button>
+              <div className='flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-800 rounded-lg'>
+                <div>
+                  <h4 className='text-sm font-medium text-gray-700 dark:text-gray-300'>
+                    接收收藏更新通知
+                  </h4>
+                  <p className='text-xs text-gray-500 dark:text-gray-400 mt-1'>
+                    当收藏的影片有更新时发送邮件通知
+                  </p>
+                </div>
+                <button
+                  onClick={() => setEmailNotifications(!emailNotifications)}
+                  disabled={emailSettingsSaving}
+                  className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
+                    emailNotifications ? 'bg-blue-600' : 'bg-gray-200 dark:bg-gray-700'
+                  }`}
+                >
+                  <span
+                    className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                      emailNotifications ? 'translate-x-6' : 'translate-x-1'
+                    }`}
+                  />
+                </button>
+              </div>
 
-            <p id='email-settings-message' className='text-xs text-center hidden'></p>
-          </div>
+              <button
+                onClick={handleSaveEmailSettings}
+                disabled={emailSettingsSaving}
+                className='w-full px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 dark:disabled:bg-blue-500 text-white text-sm font-medium rounded-lg transition-colors disabled:cursor-not-allowed flex items-center justify-center gap-2'
+              >
+                {emailSettingsSaving ? (
+                  <>
+                    <div className='w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin'></div>
+                    <span>保存中...</span>
+                  </>
+                ) : (
+                  '保存设置'
+                )}
+              </button>
+
+              <p id='email-settings-message' className='text-xs text-center hidden'></p>
+            </div>
+          )}
 
           {/* 提示信息 */}
           <div className='mt-6 p-3 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg'>
