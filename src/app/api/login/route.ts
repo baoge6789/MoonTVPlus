@@ -3,6 +3,12 @@ import { NextRequest, NextResponse } from 'next/server';
 
 import { getConfig } from '@/lib/config';
 import { db } from '@/lib/db';
+import {
+  generateRefreshToken,
+  generateTokenId,
+  storeRefreshToken,
+  TOKEN_CONFIG,
+} from '@/lib/refresh-token';
 
 export const runtime = 'nodejs';
 
@@ -42,13 +48,15 @@ async function generateSignature(
     .join('');
 }
 
-// 生成认证Cookie（带签名）
+// 生成认证Cookie（带签名和 Refresh Token）
 async function generateAuthCookie(
   username?: string,
   password?: string,
   role?: 'owner' | 'admin' | 'user',
-  includePassword = false
+  includePassword = false,
+  deviceInfo?: string
 ): Promise<string> {
+  const now = Date.now();
   const authData: any = { role: role || 'user' };
 
   // 只在需要时包含 password
@@ -58,10 +66,40 @@ async function generateAuthCookie(
 
   if (username && process.env.PASSWORD) {
     authData.username = username;
-    // 使用密码作为密钥对用户名进行签名
-    const signature = await generateSignature(username, process.env.PASSWORD);
+    authData.timestamp = now; // Access Token 时间戳
+
+    // 生成 Refresh Token（仅数据库模式）
+    if (!includePassword && STORAGE_TYPE !== 'localstorage') {
+      const tokenId = generateTokenId();
+      const refreshToken = generateRefreshToken();
+      const refreshExpires = now + TOKEN_CONFIG.REFRESH_TOKEN_AGE;
+
+      authData.tokenId = tokenId;
+      authData.refreshToken = refreshToken;
+      authData.refreshExpires = refreshExpires;
+
+      // 存储到 Redis Hash
+      try {
+        await storeRefreshToken(username, tokenId, {
+          token: refreshToken,
+          deviceInfo: deviceInfo || 'Unknown Device',
+          createdAt: now,
+          expiresAt: refreshExpires,
+          lastUsed: now,
+        });
+      } catch (error) {
+        console.error('Failed to store refresh token:', error);
+      }
+    }
+
+    // 签名所有关键字段（username, role, timestamp）防止篡改
+    const dataToSign = JSON.stringify({
+      username: authData.username,
+      role: authData.role,
+      timestamp: authData.timestamp
+    });
+    const signature = await generateSignature(dataToSign, process.env.PASSWORD);
     authData.signature = signature;
-    authData.timestamp = Date.now(); // 添加时间戳防重放攻击
   }
 
   return encodeURIComponent(JSON.stringify(authData));
@@ -89,6 +127,28 @@ async function verifyTurnstileToken(token: string, secretKey: string): Promise<b
   }
 }
 
+// 获取设备信息
+function getDeviceInfo(request: NextRequest): string {
+  const userAgent = request.headers.get('user-agent') || 'Unknown';
+
+  // 简单解析 User-Agent
+  let browser = 'Unknown Browser';
+  let os = 'Unknown OS';
+
+  if (userAgent.includes('Chrome')) browser = 'Chrome';
+  else if (userAgent.includes('Firefox')) browser = 'Firefox';
+  else if (userAgent.includes('Safari')) browser = 'Safari';
+  else if (userAgent.includes('Edge')) browser = 'Edge';
+
+  if (userAgent.includes('Windows')) os = 'Windows';
+  else if (userAgent.includes('Mac')) os = 'macOS';
+  else if (userAgent.includes('Linux')) os = 'Linux';
+  else if (userAgent.includes('Android')) os = 'Android';
+  else if (userAgent.includes('iOS')) os = 'iOS';
+
+  return `${browser} on ${os}`;
+}
+
 export async function POST(req: NextRequest) {
   try {
     // 获取站点配置
@@ -107,9 +167,9 @@ export async function POST(req: NextRequest) {
         response.cookies.set('auth', '', {
           path: '/',
           expires: new Date(0),
-          sameSite: 'lax', // 改为 lax 以支持 PWA
-          httpOnly: false, // PWA 需要客户端可访问
-          secure: false, // 根据协议自动设置
+          sameSite: 'lax',
+          httpOnly: false,
+          secure: process.env.NODE_ENV === 'production',
         });
 
         return response;
@@ -130,21 +190,23 @@ export async function POST(req: NextRequest) {
       // 验证成功，设置认证cookie
       const response = NextResponse.json({ ok: true });
       const username = process.env.USERNAME || 'default';
+      const deviceInfo = getDeviceInfo(req);
       const cookieValue = await generateAuthCookie(
         username,
         password,
         'owner',
-        true
+        true,
+        deviceInfo
       ); // localstorage 模式包含 password
       const expires = new Date();
-      expires.setDate(expires.getDate() + 7); // 7天过期
+      expires.setDate(expires.getDate() + 60); // 60天过期（Refresh Token 有效期）
 
       response.cookies.set('auth', cookieValue, {
         path: '/',
         expires,
-        sameSite: 'lax', // 改为 lax 以支持 PWA
-        httpOnly: false, // PWA 需要客户端可访问
-        secure: false, // 根据协议自动设置
+        sameSite: 'lax',
+        httpOnly: false, // 允许客户端访问
+        secure: false,
       });
 
       return response;
@@ -194,21 +256,23 @@ export async function POST(req: NextRequest) {
     ) {
       // 验证成功，设置认证cookie
       const response = NextResponse.json({ ok: true });
+      const deviceInfo = getDeviceInfo(req);
       const cookieValue = await generateAuthCookie(
         username,
         password,
         'owner',
-        false
+        false,
+        deviceInfo
       ); // 数据库模式不包含 password
       const expires = new Date();
-      expires.setDate(expires.getDate() + 7); // 7天过期
+      expires.setDate(expires.getDate() + 60); // 60天过期（Refresh Token 有效期）
 
       response.cookies.set('auth', cookieValue, {
         path: '/',
         expires,
-        sameSite: 'lax', // 改为 lax 以支持 PWA
-        httpOnly: false, // PWA 需要客户端可访问
-        secure: false, // 根据协议自动设置
+        sameSite: 'lax',
+        httpOnly: false, // 允许客户端访问
+        secure: false,
       });
 
       return response;
@@ -248,21 +312,23 @@ export async function POST(req: NextRequest) {
 
     // 验证成功，设置认证cookie
     const response = NextResponse.json({ ok: true });
+    const deviceInfo = getDeviceInfo(req);
     const cookieValue = await generateAuthCookie(
       username,
       password,
       userRole,
-      false
+      false,
+      deviceInfo
     ); // 数据库模式不包含 password
     const expires = new Date();
-    expires.setDate(expires.getDate() + 7); // 7天过期
+    expires.setDate(expires.getDate() + 60); // 60天过期（Refresh Token 有效期）
 
     response.cookies.set('auth', cookieValue, {
       path: '/',
       expires,
-      sameSite: 'lax', // 改为 lax 以支持 PWA
-      httpOnly: false, // PWA 需要客户端可访问
-      secure: false, // 根据协议自动设置
+      sameSite: 'lax',
+      httpOnly: false, // 允许客户端访问
+      secure: process.env.NODE_ENV === 'production', // 生产环境强制 HTTPS
     });
 
     console.log(`Cookie已设置`);

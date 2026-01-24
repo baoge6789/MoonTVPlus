@@ -3,6 +3,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 import { getAuthInfoFromCookie } from '@/lib/auth';
+import { refreshAccessToken, shouldRenewToken } from '@/lib/middleware-auth';
+import { TOKEN_CONFIG } from '@/lib/refresh-token';
 
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
@@ -35,39 +37,113 @@ export async function middleware(request: NextRequest) {
     return NextResponse.next();
   }
 
-  // 其他模式：只验证签名
+  // 其他模式：验证签名和时间戳，支持自动续期
   // 检查是否有用户名（非localStorage模式下密码不存储在cookie中）
-  if (!authInfo.username || !authInfo.signature) {
+  if (!authInfo.username || !authInfo.signature || !authInfo.timestamp) {
     return handleAuthFailure(request, pathname);
   }
 
-  // 验证签名（如果存在）
-  if (authInfo.signature) {
-    const isValidSignature = await verifySignature(
-      authInfo.username,
-      authInfo.signature,
-      process.env.PASSWORD || ''
-    );
+  // 验证 Access Token 时间戳
+  const ACCESS_TOKEN_AGE = TOKEN_CONFIG.ACCESS_TOKEN_AGE;
+  const now = Date.now();
+  const age = now - authInfo.timestamp;
 
-    // 签名验证通过即可
-    if (isValidSignature) {
-      return NextResponse.next();
+  // Access Token 已过期，尝试使用 Refresh Token 刷新
+  if (age > ACCESS_TOKEN_AGE) {
+    if (authInfo.refreshToken && authInfo.tokenId && authInfo.refreshExpires) {
+      // 检查 Refresh Token 是否过期
+      if (now < authInfo.refreshExpires) {
+        // 尝试刷新 Access Token
+        const newAuthData = await refreshAccessToken(
+          authInfo.username,
+          authInfo.role,
+          authInfo.tokenId,
+          authInfo.refreshToken,
+          authInfo.refreshExpires
+        );
+
+        if (newAuthData) {
+          // 刷新成功，设置新 Cookie
+          const response = NextResponse.next();
+          const expires = new Date(authInfo.refreshExpires);
+          response.cookies.set('auth', newAuthData, {
+            path: '/',
+            expires,
+            sameSite: 'lax',
+            httpOnly: false,
+            secure: false,
+          });
+          return response;
+        }
+      }
+    }
+
+    // Refresh Token 也过期或刷新失败，需要重新登录
+    return handleAuthFailure(request, pathname);
+  }
+
+  // Access Token 未过期，验证签名
+  const isValidSignature = await verifySignature(
+    authInfo.username,
+    authInfo.role,
+    authInfo.timestamp,
+    authInfo.signature,
+    process.env.PASSWORD || ''
+  );
+
+  if (!isValidSignature) {
+    return handleAuthFailure(request, pathname);
+  }
+
+  // 签名验证通过，检查是否需要续期
+  if (shouldRenewToken(authInfo.timestamp)) {
+    // 快过期了，自动续期
+    if (authInfo.refreshToken && authInfo.tokenId && authInfo.refreshExpires) {
+      const newAuthData = await refreshAccessToken(
+        authInfo.username,
+        authInfo.role,
+        authInfo.tokenId,
+        authInfo.refreshToken,
+        authInfo.refreshExpires
+      );
+
+      if (newAuthData) {
+        const response = NextResponse.next();
+        const expires = new Date(authInfo.refreshExpires);
+        response.cookies.set('auth', newAuthData, {
+          path: '/',
+          expires,
+          sameSite: 'lax',
+          httpOnly: false,
+          secure: false,
+        });
+        return response;
+      }
     }
   }
 
-  // 签名验证失败或不存在签名
-  return handleAuthFailure(request, pathname);
+  // 正常通过
+  return NextResponse.next();
 }
 
 // 验证签名
 async function verifySignature(
-  data: string,
+  username: string,
+  role: string,
+  timestamp: number,
   signature: string,
   secret: string
 ): Promise<boolean> {
   const encoder = new TextEncoder();
   const keyData = encoder.encode(secret);
-  const messageData = encoder.encode(data);
+
+  // 构造与生成签名时相同的数据结构
+  const dataToSign = JSON.stringify({
+    username,
+    role,
+    timestamp
+  });
+  const messageData = encoder.encode(dataToSign);
 
   try {
     // 导入密钥
