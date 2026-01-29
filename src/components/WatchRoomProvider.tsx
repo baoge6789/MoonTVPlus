@@ -7,6 +7,8 @@ import { useWatchRoom } from '@/hooks/useWatchRoom';
 
 import Toast, { ToastProps } from '@/components/Toast';
 
+import { getAuthInfoFromBrowserCookie } from '@/lib/auth';
+
 import type { ChatMessage, Member, Room, WatchRoomConfig } from '@/types/watch-room';
 
 // Import type from watch-room-socket
@@ -79,6 +81,7 @@ export function WatchRoomProvider({ children }: WatchRoomProviderProps) {
   const [isEnabled, setIsEnabled] = useState(false);
   const [toast, setToast] = useState<ToastProps | null>(null);
   const [reconnectFailed, setReconnectFailed] = useState(false);
+  const [isLoggedIn, setIsLoggedIn] = useState(false);
 
   // 处理房间删除的回调
   const handleRoomDeleted = useCallback((data?: { reason?: string }) => {
@@ -115,6 +118,23 @@ export function WatchRoomProvider({ children }: WatchRoomProviderProps) {
   }, []);
 
   const watchRoom = useWatchRoom(handleRoomDeleted, handleStateCleared);
+
+  // 检查登录状态
+  useEffect(() => {
+    const checkLoginStatus = () => {
+      const authInfo = getAuthInfoFromBrowserCookie();
+      const loggedIn = !!(authInfo && authInfo.username);
+      setIsLoggedIn(loggedIn);
+    };
+
+    // 初始检查
+    checkLoginStatus();
+
+    // 定期检查登录状态（每秒检查一次）
+    const interval = setInterval(checkLoginStatus, 1000);
+
+    return () => clearInterval(interval);
+  }, []);
 
   // 手动重连
   const manualReconnect = useCallback(async () => {
@@ -164,20 +184,26 @@ export function WatchRoomProvider({ children }: WatchRoomProviderProps) {
 
           // 如果使用外部服务器，需要获取认证信息（需要登录）
           if (watchRoomConfig.serverType === 'external' && watchRoomConfig.enabled) {
-            try {
-              const authResponse = await fetch('/api/watch-room-auth');
-              if (authResponse.ok) {
-                const authData = await authResponse.json();
-                watchRoomConfig.externalServerAuth = authData.externalServerAuth;
-              } else {
-                console.error('[WatchRoom] Failed to load auth info:', authResponse.status);
+            // 检查用户是否已登录
+            if (!isLoggedIn) {
+              console.log('[WatchRoom] User not logged in, skipping auth info request');
+              // 用户未登录，不调用认证接口
+            } else {
+              try {
+                const authResponse = await fetch('/api/watch-room-auth');
+                if (authResponse.ok) {
+                  const authData = await authResponse.json();
+                  watchRoomConfig.externalServerAuth = authData.externalServerAuth;
+                } else {
+                  console.error('[WatchRoom] Failed to load auth info:', authResponse.status);
+                  // 如果无法获取认证信息，禁用观影室
+                  watchRoomConfig.enabled = false;
+                }
+              } catch (error) {
+                console.error('[WatchRoom] Error loading auth info:', error);
                 // 如果无法获取认证信息，禁用观影室
                 watchRoomConfig.enabled = false;
               }
-            } catch (error) {
-              console.error('[WatchRoom] Error loading auth info:', error);
-              // 如果无法获取认证信息，禁用观影室
-              watchRoomConfig.enabled = false;
             }
           }
 
@@ -232,7 +258,7 @@ export function WatchRoomProvider({ children }: WatchRoomProviderProps) {
     return () => {
       watchRoom.disconnect();
     };
-  }, []);
+  }, [isLoggedIn]); // 添加 isLoggedIn 作为依赖
 
   const contextValue: WatchRoomContextType = {
     socket: watchRoom.socket,

@@ -526,7 +526,15 @@ async function fetchWithAuth(
   // 如果是 401 且是 token 过期，尝试刷新并重试
   if (res.status === 401) {
     const text = await res.clone().text();
-    if (text === 'Access token expired') {
+
+    // 只有当响应体包含 "Unauthorized" 或 "Refresh token expired" 或 "Access token expired" 时才处理
+    if (text.includes('Unauthorized') || text.includes('Refresh token expired') || text.includes('Access token expired')) {
+      // 如果在登录页面，跳过刷新逻辑
+      if (typeof window !== 'undefined' && window.location.pathname === '/login') {
+        console.log('[fetchWithAuth] On login page, skipping refresh logic');
+        return res;
+      }
+
       // 检查是否是登录相关的接口，如果是则不刷新
       if (
         url.includes('/api/login') ||
@@ -547,29 +555,37 @@ async function fetchWithAuth(
         // 刷新成功，重试原请求
         res = await fetch(url, options);
       }
+    } else {
+      // 不是认证错误的401，直接返回
+      console.log('[fetchWithAuth] Received 401 but not an auth error, skipping refresh');
+      return res;
     }
 
     // 如果刷新后仍然是 401，或者是其他 401 错误，跳转登录
     if (res.status === 401) {
-      // 检查当前页面是否已经是登录页，避免重复跳转
-      if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
-        // 调用 logout 接口
-        try {
-          await fetch('/api/logout', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-          });
-        } catch (error) {
-          console.error('注销请求失败:', error);
-          // 登出失败时清除前端cookie
-          clearAuthCookie();
+      const text2 = await res.clone().text();
+      // 再次检查响应体
+      if (text2.includes('Unauthorized') || text2.includes('Refresh token expired') || text2.includes('Access token expired')) {
+        // 检查当前页面是否已经是登录页，避免重复跳转
+        if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
+          // 调用 logout 接口
+          try {
+            await fetch('/api/logout', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+            });
+          } catch (error) {
+            console.error('注销请求失败:', error);
+            // 登出失败时清除前端cookie
+            clearAuthCookie();
+          }
+          const currentUrl = window.location.pathname + window.location.search;
+          const loginUrl = new URL('/login', window.location.origin);
+          loginUrl.searchParams.set('redirect', currentUrl);
+          window.location.href = loginUrl.toString();
         }
-        const currentUrl = window.location.pathname + window.location.search;
-        const loginUrl = new URL('/login', window.location.origin);
-        loginUrl.searchParams.set('redirect', currentUrl);
-        window.location.href = loginUrl.toString();
+        throw new Error('用户未授权，已跳转到登录页面');
       }
-      throw new Error('用户未授权，已跳转到登录页面');
     }
   }
 
